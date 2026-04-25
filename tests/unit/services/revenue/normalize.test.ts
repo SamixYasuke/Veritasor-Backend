@@ -3,7 +3,9 @@ import {
   normalizeRevenueEntry,
   detectNormalizationDrift,
 } from "../../../../src/services/revenue/normalize.js";
-import type { NormalizedRevenue, NormalizationBaseline } from "../../../../src/services/revenue/normalize.js";
+import type { RawRevenueInput, NormalizedRevenue, NormalizationBaseline } from "../../../../src/services/revenue/normalize.js";
+
+const raw = (input: RawRevenueInput): RawRevenueInput => input;
 
 describe("revenue normalizer", () => {
   it("should produce the canonical shape", () => {

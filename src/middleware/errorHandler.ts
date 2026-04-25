@@ -69,7 +69,7 @@ function createErrorEnvelope(error: unknown, requestId?: string): Record<string,
       ...baseEnvelope,
       code: "VALIDATION_ERROR",
       message: error.message,
-      details: error.details,
+      errors: error.details,
     };
   }
   

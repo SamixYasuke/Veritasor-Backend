@@ -117,7 +117,7 @@ export interface SignupServiceConfig {
 export const DEFAULT_SIGNUP_SERVICE_CONFIG: SignupServiceConfig = {
   abusePrevention: DEFAULT_ABUSE_PREVENTION_CONFIG,
   rateLimit: {},
-  minOperationTimeMs: 200, // Minimum 200ms for timing attack prevention
+  minOperationTimeMs: 1000, // Minimum 1000ms for timing attack prevention
   enableHoneypot: true,
   enableSuspiciousActivityLogging: true,
 };
@@ -293,7 +293,6 @@ export async function signup(
         setTimeout(resolve, rateLimitCheck.suggestedDelayMs),
       );
     }
-
     await addTimingDelay(fullConfig.minOperationTimeMs, startTime);
 
     throw new SignupError(
@@ -305,34 +304,28 @@ export async function signup(
     );
   }
 
-  // Record the attempt
   rateLimiter.recordAttempt(clientIp, normalizedEmail);
 
-  // Phase 3: Check for existing user
-  // We do this after rate limiting to avoid database hits from rate-limited requests
   const existingUser = await findUserByEmail(normalizedEmail);
 
   if (existingUser) {
-    // Apply timing delay to prevent timing attacks (don't reveal if email exists)
-    await addTimingDelay(fullConfig.minOperationTimeMs, startTime);
+    // Perform a dummy hash to equalize timing with non-existing user flow
+    await hashPassword(request.password);
 
-    // Record failed attempt (for progressive delays)
+    await addTimingDelay(fullConfig.minOperationTimeMs, startTime);
     rateLimiter.recordFailure(clientIp, normalizedEmail);
 
-    // Don't reveal whether email exists - use same message as invalid credentials
     throw new SignupError(
       "Unable to create account. Please check your information and try again.",
       "EMAIL_EXISTS",
-      400, // Use 400 instead of 409 to prevent email enumeration
+      400,
     );
   }
 
-  // Phase 4: Create the user
   try {
     const passwordHash = await hashPassword(request.password);
     const user = await createUser(normalizedEmail, passwordHash);
 
-    // Generate tokens
     const accessToken = generateToken({
       userId: user.id,
       email: user.email,
@@ -343,10 +336,7 @@ export async function signup(
       email: user.email,
     });
 
-    // Record successful signup
     rateLimiter.recordSuccess(clientIp, normalizedEmail);
-
-    // Apply timing delay to ensure consistent response time
     await addTimingDelay(fullConfig.minOperationTimeMs, startTime);
 
     return {
@@ -358,13 +348,9 @@ export async function signup(
       },
     };
   } catch (error) {
-    // Record failed attempt
     rateLimiter.recordFailure(clientIp, normalizedEmail);
-
-    // Apply timing delay
     await addTimingDelay(fullConfig.minOperationTimeMs, startTime);
 
-    // Re-throw with appropriate error type
     if (error instanceof SignupError) {
       throw error;
     }
@@ -378,13 +364,7 @@ export async function signup(
 }
 
 /**
- * Check if signup is available for a given IP and email.
- * Useful for pre-validation before showing signup form.
- *
- * @param ipAddress - Client IP address
- * @param email - Email to check (optional)
- * @param config - Rate limit configuration
- * @returns Rate limit status
+ * Check if signup is available
  */
 export function checkSignupAvailability(
   ipAddress: string,
@@ -409,12 +389,7 @@ export function checkSignupAvailability(
 }
 
 /**
- * Get signup rate limit headers for HTTP response.
- *
- * @param ipAddress - Client IP address
- * @param email - Email to check
- * @param config - Rate limit configuration
- * @returns Headers object for HTTP response
+ * Get signup rate limit headers
  */
 export function getSignupRateLimitHeaders(
   ipAddress: string,
@@ -427,5 +402,4 @@ export function getSignupRateLimitHeaders(
   return result.headers;
 }
 
-// Re-export types and utilities for external use
 export { AbusePreventionConfig, SignupRateLimitConfig };

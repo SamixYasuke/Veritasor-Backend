@@ -1,16 +1,50 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
+import {
+  describe,
+  it,
+  expect,
+  beforeAll,
+  afterAll,
+  beforeEach,
+  vi,
+} from "vitest";
 import request from "supertest";
 import express, { Express } from "express";
 import integrationsRouter from "../../src/routes/integrations.js";
 import integrationsRazorpayRouter from "../../src/routes/integrations-razorpay.js";
-import { IntegrationPermission, ROLE_PERMISSIONS } from "../../src/types/permissions.js";
+import {
+  IntegrationPermission,
+  ROLE_PERMISSIONS,
+} from "../../src/types/permissions.js";
 import { clearAll } from "../../src/repositories/integration.js";
 import { integrationRepository } from "../../src/repositories/integrations.js";
+import fc from "fast-check";
+import {
+  computeShopifyHmac,
+  handleCallback,
+} from "../../src/services/integrations/shopify/callback.js";
+import * as shopifyStore from "../../src/services/integrations/shopify/store.js";
+import { Response } from "node-fetch";
+
+const authToken = "user_token";
+const businessId = "biz_123";
+const mockTokens: Record<string, any> = {};
+const oauthStateStore: any[] = [];
 
 // Mock the auth middleware to simulate different user roles
 vi.mock("../../src/middleware/auth.js", () => ({
   requireAuth: (req: any, res: any, next: any) => {
     const authHeader = req.headers.authorization;
+    const userIdHeader = req.headers["x-user-id"];
+
+    if (userIdHeader) {
+      req.user = {
+        id: userIdHeader,
+        userId: userIdHeader,
+        email: "test@example.com",
+      };
+      return next();
+    }
+
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
       return res.status(401).json({ error: "Unauthorized" });
     }
@@ -29,9 +63,21 @@ vi.mock("../../src/middleware/auth.js", () => ({
 // Helper function to get mock user from token
 function getMockUserFromToken(token: string) {
   const tokenMap: Record<string, any> = {
-    "user_token": { id: "user_123", userId: "user_123", email: "user@example.com" },
-    "admin_token": { id: "admin_123", userId: "admin_123", email: "admin@example.com" },
-    "business_admin_token": { id: "biz_admin_123", userId: "biz_admin_123", email: "bizadmin@example.com" },
+    user_token: {
+      id: "user_123",
+      userId: "user_123",
+      email: "user@example.com",
+    },
+    admin_token: {
+      id: "admin_123",
+      userId: "admin_123",
+      email: "admin@example.com",
+    },
+    business_admin_token: {
+      id: "biz_admin_123",
+      userId: "biz_admin_123",
+      email: "bizadmin@example.com",
+    },
   };
   return tokenMap[token];
 }
@@ -204,16 +250,16 @@ describe("Razorpay Connect Credential Integrity Checks", () => {
       })
       .expect(502);
 
-    expect(response.body).toEqual({ error: "Unexpected Razorpay verification response" });
+    expect(response.body).toEqual({
+      error: "Unexpected Razorpay verification response",
+    });
   });
 });
 
 describe("Integrations Granular Permission System", () => {
   describe("GET /api/integrations", () => {
     it("should allow public access to available integrations", async () => {
-      const response = await request(app)
-        .get("/api/integrations")
-        .expect(200);
+      const response = await request(app).get("/api/integrations").expect(200);
 
       expect(response.body).toHaveProperty("available");
       expect(Array.isArray(response.body.available)).toBe(true);
@@ -417,7 +463,9 @@ describe("Integrations Granular Permission System", () => {
       expect(userPermissions).toContain(IntegrationPermission.READ_CONNECTED);
       expect(userPermissions).toContain(IntegrationPermission.CONNECT);
       expect(userPermissions).toContain(IntegrationPermission.DISCONNECT_OWN);
-      expect(userPermissions).not.toContain(IntegrationPermission.DISCONNECT_ANY);
+      expect(userPermissions).not.toContain(
+        IntegrationPermission.DISCONNECT_ANY,
+      );
       expect(userPermissions).not.toContain(IntegrationPermission.ADMIN);
     });
 
@@ -425,9 +473,15 @@ describe("Integrations Granular Permission System", () => {
       // Test business admin role permissions
       const businessAdminPermissions = ROLE_PERMISSIONS.business_admin;
 
-      expect(businessAdminPermissions).toContain(IntegrationPermission.DISCONNECT_ANY);
-      expect(businessAdminPermissions).toContain(IntegrationPermission.MANAGE_ANY);
-      expect(businessAdminPermissions).not.toContain(IntegrationPermission.ADMIN);
+      expect(businessAdminPermissions).toContain(
+        IntegrationPermission.DISCONNECT_ANY,
+      );
+      expect(businessAdminPermissions).toContain(
+        IntegrationPermission.MANAGE_ANY,
+      );
+      expect(businessAdminPermissions).not.toContain(
+        IntegrationPermission.ADMIN,
+      );
     });
 
     it("should allow admins full control", async () => {
@@ -435,7 +489,9 @@ describe("Integrations Granular Permission System", () => {
       const adminPermissions = ROLE_PERMISSIONS.admin;
 
       expect(adminPermissions).toContain(IntegrationPermission.ADMIN);
-      expect(adminPermissions.length).toBe(Object.values(IntegrationPermission).length);
+      expect(adminPermissions.length).toBe(
+        Object.values(IntegrationPermission).length,
+      );
     });
   });
 
@@ -570,8 +626,7 @@ describe("Permission Middleware Tests", () => {
 
 // ─── Shopify HMAC Property-Based Tests ───────────────────────────────────────
 
-import fc from "fast-check";
-import { computeShopifyHmac } from "../../src/services/integrations/shopify/callback.js";
+// ─── Shopify HMAC Property-Based Tests ───────────────────────────────────────
 
 describe("computeShopifyHmac — property-based tests", () => {
   // Property 1: HMAC round-trip (determinism)
@@ -580,8 +635,12 @@ describe("computeShopifyHmac — property-based tests", () => {
     fc.assert(
       fc.property(
         fc.string({ minLength: 1 }),
-        fc.dictionary(fc.string(), fc.string()),
-        (secret, params) => {
+        fc.string(), // code
+        fc.string(), // shop
+        fc.string(), // state
+        fc.dictionary(fc.string(), fc.string()), // other params
+        (secret, code, shop, state, others) => {
+          const params = { ...others, code, shop, state };
           const first = computeShopifyHmac(secret, params);
           const second = computeShopifyHmac(secret, params);
           return first === second;
@@ -597,17 +656,24 @@ describe("computeShopifyHmac — property-based tests", () => {
     fc.assert(
       fc.property(
         fc.string({ minLength: 1 }),
-        fc.dictionary(fc.string(), fc.string()),
-        (secret, params) => {
+        fc.string(), // code
+        fc.string(), // shop
+        fc.string(), // state
+        fc.dictionary(fc.string(), fc.string()), // other params
+        (secret, code, shop, state, others) => {
+          const params = { ...others, code, shop, state };
           // Build a shuffled copy of params
           const entries = Object.entries(params);
           for (let i = entries.length - 1; i > 0; i--) {
             const j = Math.floor(Math.random() * (i + 1));
             [entries[i], entries[j]] = [entries[j], entries[i]];
           }
-          const shuffled = Object.fromEntries(entries);
+          const shuffled = Object.fromEntries(entries) as any;
 
-          return computeShopifyHmac(secret, params) === computeShopifyHmac(secret, shuffled);
+          return (
+            computeShopifyHmac(secret, params as any) ===
+            computeShopifyHmac(secret, shuffled)
+          );
         },
       ),
       { numRuns: 100 },
@@ -620,22 +686,34 @@ describe("computeShopifyHmac — property-based tests", () => {
     fc.assert(
       fc.property(
         fc.string({ minLength: 1 }),
-        fc.dictionary(fc.string(), fc.string()),
+        fc.string(), // code
+        fc.string(), // shop
+        fc.string(), // state
+        fc.dictionary(fc.string(), fc.string()), // other params
         fc.string(),
-        (secret, params, hmacValue) => {
+        (secret, code, shop, state, others, hmacValue) => {
+          const params = { ...others, code, shop, state };
           // Baseline: params without any `hmac` key
           const { hmac: _removed, ...withoutHmac } = params;
-          const baseline = computeShopifyHmac(secret, withoutHmac);
+          const baseline = computeShopifyHmac(secret, withoutHmac as any);
 
           // With `hmac` key added
           const withHmac = { ...withoutHmac, hmac: hmacValue };
-          const withHmacResult = computeShopifyHmac(secret, withHmac);
+          const withHmacResult = computeShopifyHmac(secret, withHmac as any);
 
           // With `hmac` key set to a different value
-          const withDifferentHmac = { ...withoutHmac, hmac: hmacValue + "_mutated" };
-          const withDifferentHmacResult = computeShopifyHmac(secret, withDifferentHmac);
+          const withDifferentHmac = {
+            ...withoutHmac,
+            hmac: hmacValue + "_mutated",
+          };
+          const withDifferentHmacResult = computeShopifyHmac(
+            secret,
+            withDifferentHmac as any,
+          );
 
-          return baseline === withHmacResult && baseline === withDifferentHmacResult;
+          return (
+            baseline === withHmacResult && baseline === withDifferentHmacResult
+          );
         },
       ),
       { numRuns: 100 },
@@ -645,8 +723,7 @@ describe("computeShopifyHmac — property-based tests", () => {
 
 // ─── Task 3.2: handleCallback — env guard ────────────────────────────────────
 
-import { handleCallback } from "../../src/services/integrations/shopify/callback.js";
-import * as shopifyStore from "../../src/services/integrations/shopify/store.js";
+// ─── Task 3.2: handleCallback — env guard ────────────────────────────────────
 
 describe("handleCallback — env guard", () => {
   const originalClientId = process.env.SHOPIFY_CLIENT_ID;
@@ -670,21 +747,30 @@ describe("handleCallback — env guard", () => {
     delete process.env.SHOPIFY_CLIENT_ID;
     process.env.SHOPIFY_CLIENT_SECRET = "some-secret";
     const result = await handleCallback({ code: "c", shop: "s", state: "st" });
-    expect(result).toEqual({ success: false, error: "Shopify app not configured" });
+    expect(result).toEqual({
+      success: false,
+      error: "Shopify app not configured",
+    });
   });
 
   it("returns 'Shopify app not configured' when SHOPIFY_CLIENT_SECRET is missing", async () => {
     process.env.SHOPIFY_CLIENT_ID = "some-client-id";
     delete process.env.SHOPIFY_CLIENT_SECRET;
     const result = await handleCallback({ code: "c", shop: "s", state: "st" });
-    expect(result).toEqual({ success: false, error: "Shopify app not configured" });
+    expect(result).toEqual({
+      success: false,
+      error: "Shopify app not configured",
+    });
   });
 
   it("returns 'Shopify app not configured' when both env vars are empty strings", async () => {
     process.env.SHOPIFY_CLIENT_ID = "";
     process.env.SHOPIFY_CLIENT_SECRET = "";
     const result = await handleCallback({ code: "c", shop: "s", state: "st" });
-    expect(result).toEqual({ success: false, error: "Shopify app not configured" });
+    expect(result).toEqual({
+      success: false,
+      error: "Shopify app not configured",
+    });
   });
 });
 
@@ -709,7 +795,11 @@ describe("computeShopifyHmac — property-based tests", () => {
         }),
         async (params) => {
           const hmac = computeShopifyHmac("test-secret", params);
-          const tamperedParams = { ...params, code: params.code + "_tampered", hmac };
+          const tamperedParams = {
+            ...params,
+            code: params.code + "_tampered",
+            hmac,
+          };
           const result = await handleCallback(tamperedParams);
           return result.error === "Invalid HMAC signature";
         },
@@ -738,10 +828,18 @@ describe("computeShopifyHmac — property-based tests", () => {
     await fc.assert(
       fc.asyncProperty(
         fc.oneof(
-          fc.constant({ shop: "test.myshopify.com", state: "abc", hmac: "xyz" }),
+          fc.constant({
+            shop: "test.myshopify.com",
+            state: "abc",
+            hmac: "xyz",
+          }),
           fc.constant({ code: "abc", state: "abc", hmac: "xyz" }),
           fc.constant({ code: "abc", shop: "test.myshopify.com", hmac: "xyz" }),
-          fc.constant({ code: "abc", shop: "test.myshopify.com", state: "abc" }),
+          fc.constant({
+            code: "abc",
+            shop: "test.myshopify.com",
+            state: "abc",
+          }),
         ),
         async (params) => {
           const result = await handleCallback(params as Record<string, string>);
@@ -770,7 +868,11 @@ describe("handleCallback — HMAC and params validation", () => {
   });
 
   function makeValidParams(secret: string) {
-    const params = { code: "auth-code", shop: "mystore.myshopify.com", state: "nonce-123" };
+    const params = {
+      code: "auth-code",
+      shop: "mystore.myshopify.com",
+      state: "nonce-123",
+    };
     const hmac = computeShopifyHmac(secret, params);
     return { ...params, hmac };
   }
@@ -813,7 +915,10 @@ describe("handleCallback — HMAC and params validation", () => {
       state: "nonce-123",
       hmac: "somehash",
     });
-    expect(result).toEqual({ success: false, error: "Missing required callback parameters" });
+    expect(result).toEqual({
+      success: false,
+      error: "Missing required callback parameters",
+    });
   });
 
   it("missing shop returns Missing required callback parameters", async () => {
@@ -822,7 +927,10 @@ describe("handleCallback — HMAC and params validation", () => {
       state: "nonce-123",
       hmac: "somehash",
     });
-    expect(result).toEqual({ success: false, error: "Missing required callback parameters" });
+    expect(result).toEqual({
+      success: false,
+      error: "Missing required callback parameters",
+    });
   });
 
   it("missing state returns Missing required callback parameters", async () => {
@@ -831,12 +939,19 @@ describe("handleCallback — HMAC and params validation", () => {
       shop: "mystore.myshopify.com",
       hmac: "somehash",
     });
-    expect(result).toEqual({ success: false, error: "Missing required callback parameters" });
+    expect(result).toEqual({
+      success: false,
+      error: "Missing required callback parameters",
+    });
   });
 
   it("HMAC validated before state nonce is consumed (ordering guarantee)", async () => {
     // Seed the store with a valid nonce
-    shopifyStore.setOAuthState("nonce-123", "mystore.myshopify.com");
+    shopifyStore.setOAuthState(
+      "nonce-123",
+      "mystore.myshopify.com",
+      "user_123",
+    );
 
     // Call handleCallback with a tampered HMAC (so HMAC check fails)
     const params = makeValidParams("test-secret");
@@ -862,13 +977,19 @@ describe("computeShopifyHmac — property-based tests", () => {
 
     await fc.assert(
       fc.asyncProperty(
-        fc.string({ minLength: 1 }).filter(
-          (s) => !/^[a-zA-Z0-9][a-zA-Z0-9\-]*\.myshopify\.com$/.test(s),
-        ),
+        fc
+          .string({ minLength: 1 })
+          .filter(
+            (s) => !/^[a-zA-Z0-9][a-zA-Z0-9\-]*\.myshopify\.com$/.test(s),
+          ),
         fc.string({ minLength: 1 }),
         async (invalidShop, state) => {
           // Seed the store with the nonce
-          shopifyStore.setOAuthState(state, "some-shop.myshopify.com");
+          shopifyStore.setOAuthState(
+            state,
+            "some-shop.myshopify.com",
+            "user_123",
+          );
 
           // Build params with the invalid shop and compute a valid HMAC over them
           const baseParams = { code: "auth-code", shop: invalidShop, state };
@@ -880,7 +1001,9 @@ describe("computeShopifyHmac — property-based tests", () => {
           // The nonce must still be in the store (not consumed)
           const remaining = shopifyStore.consumeOAuthState(state);
 
-          return result.error === "Invalid shop hostname" && remaining !== undefined;
+          return (
+            result.error === "Invalid shop hostname" && remaining !== undefined
+          );
         },
       ),
       { numRuns: 50 },
@@ -905,21 +1028,33 @@ describe("handleCallback — shop hostname validation", () => {
   });
 
   it("valid .myshopify.com hostname proceeds past shop check", async () => {
-    const params = { code: "auth-code", shop: "mystore.myshopify.com", state: "nonce-abc" };
+    const params = {
+      code: "auth-code",
+      shop: "mystore.myshopify.com",
+      state: "nonce-abc",
+    };
     const hmac = computeShopifyHmac("test-secret", params);
     const result = await handleCallback({ ...params, hmac });
     expect(result.error).not.toBe("Invalid shop hostname");
   });
 
   it("hostname with dots in subdomain is rejected", async () => {
-    const params = { code: "auth-code", shop: "my.store.myshopify.com", state: "nonce-abc" };
+    const params = {
+      code: "auth-code",
+      shop: "my.store.myshopify.com",
+      state: "nonce-abc",
+    };
     const hmac = computeShopifyHmac("test-secret", params);
     const result = await handleCallback({ ...params, hmac });
     expect(result).toEqual({ success: false, error: "Invalid shop hostname" });
   });
 
   it("non-myshopify domain is rejected", async () => {
-    const params = { code: "auth-code", shop: "mystore.shopify.com", state: "nonce-abc" };
+    const params = {
+      code: "auth-code",
+      shop: "mystore.shopify.com",
+      state: "nonce-abc",
+    };
     const hmac = computeShopifyHmac("test-secret", params);
     const result = await handleCallback({ ...params, hmac });
     expect(result).toEqual({ success: false, error: "Invalid shop hostname" });
@@ -927,7 +1062,11 @@ describe("handleCallback — shop hostname validation", () => {
 
   it("shop hostname is normalized to lowercase before validation", async () => {
     // HMAC is computed with the mixed-case shop value (raw params)
-    const params = { code: "auth-code", shop: "MyStore.myshopify.com", state: "nonce-abc" };
+    const params = {
+      code: "auth-code",
+      shop: "MyStore.myshopify.com",
+      state: "nonce-abc",
+    };
     const hmac = computeShopifyHmac("test-secret", params);
     const result = await handleCallback({ ...params, hmac });
     // Normalization happens inside handleCallback, so shop validation should pass
@@ -950,25 +1089,30 @@ describe("computeShopifyHmac — property-based tests", () => {
 
     try {
       await fc.assert(
-        fc.asyncProperty(
-          fc.string({ minLength: 1 }),
-          async (state) => {
-            // Seed the store with the nonce
-            shopifyStore.setOAuthState(state, "mystore.myshopify.com");
+        fc.asyncProperty(fc.string({ minLength: 1 }), async (state) => {
+          // Seed the store with the nonce
+          shopifyStore.setOAuthState(
+            state,
+            "mystore.myshopify.com",
+            "user_123",
+          );
 
-            // Build valid params and compute valid HMAC
-            const baseParams = { code: "auth-code", shop: "mystore.myshopify.com", state };
-            const hmac = computeShopifyHmac("test-secret", baseParams);
-            const params = { ...baseParams, hmac };
+          // Build valid params and compute valid HMAC
+          const baseParams = {
+            code: "auth-code",
+            shop: "mystore.myshopify.com",
+            state,
+          };
+          const hmac = computeShopifyHmac("test-secret", baseParams);
+          const params = { ...baseParams, hmac };
 
-            // Call handleCallback — fails at token exchange (stubbed), that's fine
-            await handleCallback(params);
+          // Call handleCallback — fails at token exchange (stubbed), that's fine
+          await handleCallback(params);
 
-            // The nonce must be gone from the store (consumed on first use)
-            const remaining = shopifyStore.consumeOAuthState(state);
-            return remaining === undefined;
-          },
-        ),
+          // The nonce must be gone from the store (consumed on first use)
+          const remaining = shopifyStore.consumeOAuthState(state);
+          return remaining === undefined;
+        }),
         { numRuns: 50 },
       );
     } finally {
@@ -1003,23 +1147,49 @@ describe("handleCallback — state nonce validation", () => {
 
   it("state not in store returns Invalid or expired state", async () => {
     // Do NOT seed the store — state is absent
-    const params = makeValidParamsForShop("test-secret", "mystore.myshopify.com", "nonce-not-seeded");
+    const params = makeValidParamsForShop(
+      "test-secret",
+      "mystore.myshopify.com",
+      "nonce-not-seeded",
+    );
     const result = await handleCallback(params);
-    expect(result).toEqual({ success: false, error: "Invalid or expired state" });
+    expect(result).toEqual({
+      success: false,
+      error: "Invalid or expired state",
+    });
   });
 
   it("state found but shop mismatch returns Invalid or expired state", async () => {
     // Seed with a different shop
-    shopifyStore.setOAuthState("nonce-abc", "other-shop.myshopify.com");
-    const params = makeValidParamsForShop("test-secret", "mystore.myshopify.com", "nonce-abc");
+    shopifyStore.setOAuthState(
+      "nonce-abc",
+      "other-shop.myshopify.com",
+      "user_123",
+    );
+    const params = makeValidParamsForShop(
+      "test-secret",
+      "mystore.myshopify.com",
+      "nonce-abc",
+    );
     const result = await handleCallback(params);
-    expect(result).toEqual({ success: false, error: "Invalid or expired state" });
+    expect(result).toEqual({
+      success: false,
+      error: "Invalid or expired state",
+    });
   });
 
   it("state consumed after first use (replay prevention)", async () => {
     // Seed the store
-    shopifyStore.setOAuthState("nonce-abc", "mystore.myshopify.com");
-    const params = makeValidParamsForShop("test-secret", "mystore.myshopify.com", "nonce-abc");
+    shopifyStore.setOAuthState(
+      "nonce-abc",
+      "mystore.myshopify.com",
+      "user_123",
+    );
+    const params = makeValidParamsForShop(
+      "test-secret",
+      "mystore.myshopify.com",
+      "nonce-abc",
+    );
 
     // First call — will fail at token exchange (stubbed), but nonce should be consumed
     await handleCallback(params);
@@ -1034,7 +1204,11 @@ describe("handleCallback — state nonce validation", () => {
 
 describe("handleCallback — token exchange", () => {
   function makeValidParamsForTokenExchange() {
-    const params = { code: "auth-code", shop: "mystore.myshopify.com", state: "nonce-abc" };
+    const params = {
+      code: "auth-code",
+      shop: "mystore.myshopify.com",
+      state: "nonce-abc",
+    };
     const hmac = computeShopifyHmac("test-secret", params);
     return { ...params, hmac };
   }
@@ -1042,7 +1216,11 @@ describe("handleCallback — token exchange", () => {
   beforeEach(() => {
     process.env.SHOPIFY_CLIENT_ID = "test-client-id";
     process.env.SHOPIFY_CLIENT_SECRET = "test-secret";
-    shopifyStore.setOAuthState("nonce-abc", "mystore.myshopify.com");
+    shopifyStore.setOAuthState(
+      "nonce-abc",
+      "mystore.myshopify.com",
+      "user_123",
+    );
   });
 
   afterEach(() => {
@@ -1052,35 +1230,69 @@ describe("handleCallback — token exchange", () => {
   });
 
   it("network error returns Token exchange request failed", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("Network error")));
-    shopifyStore.setOAuthState("nonce-abc", "mystore.myshopify.com");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockRejectedValue(new Error("Network error")),
+    );
+    shopifyStore.setOAuthState(
+      "nonce-abc",
+      "mystore.myshopify.com",
+      "user_123",
+    );
     const result = await handleCallback(makeValidParamsForTokenExchange());
-    expect(result).toEqual({ success: false, error: "Token exchange request failed" });
+    expect(result).toEqual({
+      success: false,
+      error: "Token exchange request failed",
+    });
   });
 
   it("non-2xx response returns Token exchange failed", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 400 }));
-    shopifyStore.setOAuthState("nonce-abc", "mystore.myshopify.com");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: false, status: 400 }),
+    );
+    shopifyStore.setOAuthState(
+      "nonce-abc",
+      "mystore.myshopify.com",
+      "user_123",
+    );
     const result = await handleCallback(makeValidParamsForTokenExchange());
     expect(result).toEqual({ success: false, error: "Token exchange failed" });
   });
 
   it("response missing access_token returns No access token in response", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({}),
-    }));
-    shopifyStore.setOAuthState("nonce-abc", "mystore.myshopify.com");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({}),
+      }),
+    );
+    shopifyStore.setOAuthState(
+      "nonce-abc",
+      "mystore.myshopify.com",
+      "user_123",
+    );
     const result = await handleCallback(makeValidParamsForTokenExchange());
-    expect(result).toEqual({ success: false, error: "No access token in response" });
+    expect(result).toEqual({
+      success: false,
+      error: "No access token in response",
+    });
   });
 
   it("successful flow returns success true with normalized shop", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ access_token: "shpat_test123" }),
-    }));
-    shopifyStore.setOAuthState("nonce-abc", "mystore.myshopify.com");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ access_token: "shpat_test123" }),
+      }),
+    );
+    shopifyStore.setOAuthState(
+      "nonce-abc",
+      "mystore.myshopify.com",
+      "user_123",
+    );
     const result = await handleCallback(makeValidParamsForTokenExchange());
     expect(result).toEqual({ success: true, shop: "mystore.myshopify.com" });
   });

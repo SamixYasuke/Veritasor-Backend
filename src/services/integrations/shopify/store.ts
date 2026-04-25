@@ -10,7 +10,7 @@ export interface ShopifyOAuthState {
   userId: string
 }
 
-const SHOP_HOST_REGEX = /^[a-zA-Z0-9][a-zA-Z0-9.-]*\.myshopify\.com$/
+const SHOP_HOST_REGEX = /^[a-zA-Z0-9][a-zA-Z0-9-]*\.myshopify\.com$/
 
 const stateToShop = new Map<string, ShopifyOAuthState>()
 const shopTokens = new Map<string, string>()

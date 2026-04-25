@@ -4,8 +4,22 @@
  * Access tokens are never logged or returned.
  */
 
+import { timingSafeEqual, createHmac } from 'node:crypto'
 import * as integrationRepository from '../../../repositories/integration.js'
 import * as store from './store.js'
+
+/**
+ * Computes the Shopify HMAC signature for validation.
+ */
+export function computeShopifyHmac(secret: string, params: CallbackParams): string {
+  const { hmac: _hmac, ...rest } = params
+  const sortedParams = Object.keys(rest)
+    .sort()
+    .map((key) => `${key}=${rest[key]}`)
+    .join('&')
+
+  return createHmac('sha256', secret).update(sortedParams).digest('hex')
+}
 
 export interface CallbackParams {
   code: string
@@ -25,11 +39,13 @@ export interface CallbackResult {
  * Handle OAuth callback: consume state, exchange code for token, persist via integration store.
  */
 export async function handleCallback(params: CallbackParams): Promise<CallbackResult> {
-  const { code, shop, state } = params
+  const { code, shop, state, hmac } = params
   const clientId = process.env.SHOPIFY_CLIENT_ID ?? ''
   const clientSecret = process.env.SHOPIFY_CLIENT_SECRET ?? ''
 
-  const { code, shop, state, hmac } = params
+  if (!clientId || !clientSecret) {
+    return { success: false, error: 'Shopify app not configured' }
+  }
 
   // Parameter completeness guard — check code, shop, state first
   if (!code || !shop || !state) {
@@ -42,9 +58,9 @@ export async function handleCallback(params: CallbackParams): Promise<CallbackRe
   }
 
   // HMAC validation using constant-time comparison
-  const computed = computeShopifyHmac(currentClientSecret, params)
-  const computedBuf = Buffer.from(computed)
-  const providedBuf = Buffer.from(hmac)
+  const computed = computeShopifyHmac(clientSecret, params)
+  const computedBuf = Buffer.from(computed, 'hex')
+  const providedBuf = Buffer.from(hmac, 'hex')
   if (
     computedBuf.length !== providedBuf.length ||
     !timingSafeEqual(computedBuf, providedBuf)
@@ -64,8 +80,8 @@ export async function handleCallback(params: CallbackParams): Promise<CallbackRe
 
   const tokenUrl = `https://${shopHost}/admin/oauth/access_token`
   const body = new URLSearchParams({
-    client_id: currentClientId,
-    client_secret: currentClientSecret,
+    client_id: clientId,
+    client_secret: clientSecret,
     code,
   })
 
@@ -97,7 +113,7 @@ export async function handleCallback(params: CallbackParams): Promise<CallbackRe
   )
 
   if (existingShopifyIntegration && existingShopifyIntegration.externalId !== shopHost) {
-    await integrationRepository.deleteById(existingShopifyIntegration.id)
+    await integrationRepository.deleteById(stateRecord.userId, existingShopifyIntegration.id)
     store.deleteToken(existingShopifyIntegration.externalId)
   }
 
@@ -107,7 +123,7 @@ export async function handleCallback(params: CallbackParams): Promise<CallbackRe
       : null
 
   if (reusableIntegration) {
-    const updated = await integrationRepository.update(reusableIntegration.id, {
+    const updated = await integrationRepository.update(stateRecord.userId, reusableIntegration.id, {
       token: { accessToken },
       metadata: { shop: shopHost },
     })

@@ -190,12 +190,12 @@ export const ErrorCodes = {
  * Type guard to check if error is an AppError
  */
 export function isAppError(error: unknown): error is AppError {
-  return error instanceof AppError;
+  return error instanceof AppError || (error as any)?.name === 'AppError' || (error as any)?.constructor?.name === 'AppError';
 }
 
 /**
  * Type guard to check if error is a ValidationError
  */
 export function isValidationError(error: unknown): error is ValidationError {
-  return error instanceof ValidationError;
+  return error instanceof ValidationError || (error as any)?.name === 'ValidationError' || (error as any)?.constructor?.name === 'ValidationError';
 }

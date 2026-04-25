@@ -6,7 +6,7 @@ import { Request, Response, NextFunction } from 'express'
 import { requireBusinessAuth } from '../../../src/middleware/requireBusinessAuth.js'
 import * as jwt from '../../../src/utils/jwt.js'
 import * as userRepository from '../../../src/repositories/userRepository.js'
-import * as businessRepository from '../../../src/repositories/business.js'
+import { businessRepository } from '../../../src/repositories/business.js'
 
 describe('requireBusinessAuth middleware', () => {
   let mockRequest: Partial<Request> & { 
@@ -20,6 +20,10 @@ describe('requireBusinessAuth middleware', () => {
     mockRequest = {
       headers: {},
       body: {},
+      header: vi.fn((name: string): any => {
+        const h = mockRequest.headers || {};
+        return h[name.toLowerCase()];
+      }) as any,
     }
     mockResponse = {
       status: vi.fn().mockReturnThis(),

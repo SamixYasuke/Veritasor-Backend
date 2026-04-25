@@ -183,4 +183,8 @@ The following security assumptions are baked into the system and must be validat
 
 4. **Idempotency Integrity**:
     - *Assumption*: Multiple identical requests do not result in multiple on-chain transactions (saving gas/fees).
-    - *Validation*: Check local database for single record entry after multiple POST bursts.
+    - *Validation*: 
+        - Check local database for single record entry after multiple POST bursts.
+        - Verify that re-submitting with a *different* body using the *same* key returns `409 Conflict`.
+        - Verify that responses are correctly cached and returned within the TTL (default 24h).
+        - Ensure idempotency is scoped to the user to prevent cross-account key collisions.

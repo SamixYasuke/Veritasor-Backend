@@ -16,6 +16,8 @@
  */
 
 import type { Request, Response, NextFunction } from 'express';
+import { createHash } from 'crypto';
+import { logger } from '../utils/logger.js';
 
 // ============================================================================
 // Constants
@@ -51,6 +53,8 @@ export interface IdempotencyEntry {
   body: unknown;
   /** Timestamp when the entry was created */
   createdAt: number;
+  /** Hash of the request body to prevent key collisions with different payloads */
+  requestHash: string;
 }
 
 /**
@@ -213,6 +217,25 @@ function generateStoreKey(scope: string, userKey: string, keyValue: string): str
   return `idempotency:${scope}:${userKey}:${keyValue}`;
 }
 
+/**
+ * Generate a stable hash for the request body
+ * @param body - The request body
+ * @returns SHA-256 hash string
+ */
+function calculateRequestHash(body: unknown): string {
+  if (!body || (typeof body === 'object' && Object.keys(body as object).length === 0)) {
+    return 'empty_body';
+  }
+  
+  // Create a stable string representation by sorting keys at the top level
+  // For deeply nested objects, this is a best-effort approach
+  const content = typeof body === 'string' 
+    ? body 
+    : JSON.stringify(body, Object.keys(body as object).sort());
+    
+  return createHash('sha256').update(content).digest('hex');
+}
+
 // ============================================================================
 // Middleware Factory
 // ============================================================================
@@ -261,7 +284,8 @@ export function idempotencyMiddleware(options: IdempotencyOptions) {
 
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     // Check if we should skip idempotency processing
-    if (skipIf(req)) {
+    // Only apply to POST requests by default as they are typically non-idempotent
+    if (req.method !== 'POST' || skipIf(req)) {
       next();
       return;
     }
@@ -276,6 +300,7 @@ export function idempotencyMiddleware(options: IdempotencyOptions) {
 
     // Validate key presence
     if (!keyValue) {
+      logger.warn(`[Idempotency] Missing ${IDEMPOTENCY_KEY_HEADER} for ${req.method} ${req.path}`);
       res.status(400).json({
         error: 'Bad Request',
         message: `Missing ${IDEMPOTENCY_KEY_HEADER} header`,
@@ -286,6 +311,7 @@ export function idempotencyMiddleware(options: IdempotencyOptions) {
 
     // Validate key format
     if (!validateKey(keyValue)) {
+      logger.warn(`[Idempotency] Invalid ${IDEMPOTENCY_KEY_HEADER} format: ${keyValue}`);
       res.status(400).json({
         error: 'Bad Request',
         message: `Invalid ${IDEMPOTENCY_KEY_HEADER} format. Key must be between ${MIN_KEY_LENGTH} and ${MAX_KEY_LENGTH} characters${getStrictKeyFormatMessage(strictKeyFormat)}`,
@@ -297,12 +323,33 @@ export function idempotencyMiddleware(options: IdempotencyOptions) {
     // Generate unique key for this user + scope + key combination
     const userKey = getUserKey(req);
     const storeKey = generateStoreKey(scope, userKey, keyValue);
+    const currentRequestHash = calculateRequestHash(req.body);
 
-    // Check for cached response
-    const cached = await store.get(storeKey);
-    if (cached) {
-      // Return cached response
-      res.status(cached.status).json(cached.body);
+    try {
+      // Check for cached response
+      const cached = await store.get(storeKey);
+      
+      if (cached) {
+        // Verify request body hash to prevent key collisions
+        if (cached.requestHash !== currentRequestHash) {
+          logger.error(`[Idempotency] Key collision detected for key: ${keyValue}. Request body does not match cached response.`);
+          res.status(409).json({
+            error: 'Conflict',
+            message: 'Idempotency key collision: This key was previously used with a different request body.',
+            code: 'IDEMPOTENCY_KEY_COLLISION',
+          });
+          return;
+        }
+
+        logger.info(`[Idempotency] Cache hit for key: ${keyValue}. Returning cached response.`);
+        // Return cached response
+        res.status(cached.status).json(cached.body);
+        return;
+      }
+    } catch (err) {
+      logger.error(`[Idempotency] Store error during retrieval:`, err);
+      // Fail open: continue to handler if store fails (optional strategy)
+      next();
       return;
     }
 
@@ -325,9 +372,10 @@ export function idempotencyMiddleware(options: IdempotencyOptions) {
           status: statusCode,
           body,
           createdAt: Date.now(),
+          requestHash: currentRequestHash,
         };
         store.set(storeKey, entry, ttlMs).catch((err) => {
-          console.error('[idempotency] Failed to cache response:', err);
+          logger.error(`[Idempotency] Failed to cache response for key ${keyValue}:`, err);
         });
       }
       return originalJson(body);

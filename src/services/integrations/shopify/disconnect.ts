@@ -62,7 +62,7 @@ export default async function disconnectShopify(req: Request, res: Response) {
     return res.status(502).json({ error: revocation.error })
   }
 
-  const ok = await deleteById(rec.id)
+  const ok = await deleteById(userId, rec.id)
   if (!ok) {
     return res.status(500).json({ error: 'Failed to disconnect Shopify integration' })
   }

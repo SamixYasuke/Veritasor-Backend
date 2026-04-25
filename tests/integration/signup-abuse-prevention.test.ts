@@ -23,7 +23,6 @@ import {
   resetSignupRateLimitStore,
   getSignupRateLimitStore,
   createSignupRateLimitStore,
-  getSignupRateLimitStore,
 } from "../../src/utils/signupRateLimiter.js";
 import {
   deleteUser,

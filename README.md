@@ -59,6 +59,37 @@ Routes may be mounted with an `/api/v{n}` prefix and/or legacy unversioned paths
 | POST   | `/api/v1/businesses`      | Create business           | User Auth |
 | PATCH  | `/api/v1/businesses/me`   | Update business           | User Auth |
 
+## Idempotency
+
+The API supports idempotency for POST requests to prevent duplicate operations (e.g., submitting the same attestation twice).
+
+### Usage
+
+Include the `Idempotency-Key` header with a unique value (UUID recommended).
+
+```http
+POST /api/v1/attestations
+Idempotency-Key: <unique_key>
+Content-Type: application/json
+
+{
+  "amount": "100.00",
+  "currency": "USD"
+}
+```
+
+### Semantics
+
+1. **Successful Response Caching:** Successful responses (2xx) are cached for 24 hours (default).
+2. **Key Collision Protection:** If the same key is used with a different request body, the API returns a `409 Conflict`.
+3. **User Scoping:** Idempotency keys are scoped to the authenticated user.
+4. **Error Handling:** If the store is unavailable, the middleware fails open to ensure service availability.
+
+**Error Codes:**
+- `IDEMPOTENCY_KEY_REQUIRED` (400): Missing `Idempotency-Key` header.
+- `IDEMPOTENCY_KEY_INVALID` (400): Invalid key format or length.
+- `IDEMPOTENCY_KEY_COLLISION` (409): Key used with a different request body.
+
 ## Authentication & Authorization
 
 ### User Authentication

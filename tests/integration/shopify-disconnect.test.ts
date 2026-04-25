@@ -2,8 +2,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import express, { type Express } from 'express'
 import request from 'supertest'
 import { integrationsShopifyRouter } from '../../src/routes/integrations-shopify.js'
+import { computeShopifyHmac } from '../../src/services/integrations/shopify/callback.js'
 import { clearAll as clearIntegrations, listByUserId } from '../../src/repositories/integration.js'
 import { clearAll as clearShopifyStore, getToken } from '../../src/services/integrations/shopify/store.js'
+
+vi.mock('../../src/middleware/auth.js', () => ({
+  requireAuth: (req: any, res: any, next: any) => {
+    const userId = req.headers['x-user-id']
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' })
+    req.user = { id: userId, userId }
+    next()
+  },
+}))
 
 function jsonResponse(status: number, body: unknown): Response {
   return {
@@ -62,12 +72,18 @@ describe('Shopify disconnect revocation assurance', () => {
     const state = redirectUrl.searchParams.get('state')
     expect(state).toBeTruthy()
 
+    const params = {
+      code: 'oauth-code-123',
+      shop: `${shop}.myshopify.com`,
+      state: state ?? '',
+    }
+    const hmac = computeShopifyHmac(process.env.SHOPIFY_CLIENT_SECRET!, params)
+
     await request(app)
       .get('/api/integrations/shopify/callback')
       .query({
-        code: 'oauth-code-123',
-        shop: `${shop}.myshopify.com`,
-        state,
+        ...params,
+        hmac,
       })
       .expect(200)
 

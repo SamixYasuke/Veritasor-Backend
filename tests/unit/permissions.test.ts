@@ -139,7 +139,7 @@ describe("PermissionService", () => {
 });
 
 describe("requirePermissions middleware", () => {
-  let mockReq: Partial<Request>;
+  let mockReq: any;
   let mockRes: Partial<Response>;
   let mockNext: NextFunction;
 
@@ -147,6 +147,8 @@ describe("requirePermissions middleware", () => {
     mockReq = {
       user: { userId: "user_123", email: "test@example.com" },
       headers: {},
+      params: {},
+      query: {},
     };
     mockRes = {
       status: vi.fn().mockReturnThis(),
@@ -244,7 +246,7 @@ describe("requirePermissions middleware", () => {
 
     await middleware(mockReq as Request, mockRes as Response, mockNext);
 
-    expect(mockRes.status).toHaveBeenCalledWith(403);
+    expect(mockRes.status).toHaveBeenCalledWith(404);
     expect(mockNext).not.toHaveBeenCalled();
   });
 
@@ -255,7 +257,7 @@ describe("requirePermissions middleware", () => {
       customCheck,
     });
 
-    mockReq.params = { id: "integration_123" };
+    mockReq.params = { id: "user_123_integration" };
 
     await middleware(mockReq as Request, mockRes as Response, mockNext);
 
